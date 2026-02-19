@@ -1,4 +1,4 @@
-# APEX Markets — Stock Dashboard
+# ysra MARKET - STOCKS DASHBOARD
 
 A Flask web app that tracks Top 500 stocks via Yahoo Finance with BUY/HOLD/SELL signals.
 
