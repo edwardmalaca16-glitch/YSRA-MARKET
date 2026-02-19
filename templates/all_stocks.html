@@ -1,0 +1,262 @@
+{% extends "base.html" %}
+{% block title %}All Stocks — ysra Markets{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="page-title">ALL <span>STOCKS</span></div>
+    <div class="page-subtitle">// TOP 500 COMPANIES · SORTED BY SCORE</div>
+  </div>
+  <div class="last-updated" id="lastUpdated">Loading...</div>
+</div>
+
+<div class="controls-bar">
+  <input type="text" class="search-box" id="searchBox" placeholder="Search symbol or name..." />
+  <button class="filter-btn active" data-filter="all">ALL</button>
+  <button class="filter-btn" data-filter="buy">BUY</button>
+  <button class="filter-btn" data-filter="hold">HOLD</button>
+  <button class="filter-btn" data-filter="sell">SELL</button>
+</div>
+
+<div id="loadingState" class="loading-state">
+  <div class="spinner"></div>
+  <div class="loading-text">FETCHING ALL MARKET DATA...</div>
+</div>
+<div id="errorState" class="error-state" style="display:none;">⚠ Failed to load data.</div>
+
+<!-- DESKTOP TABLE -->
+<div class="table-wrap" id="tableWrap" style="display:none;">
+  <table class="stocks-table">
+    <thead>
+      <tr>
+        <th data-col="rank" class="sorted"># <span class="sort-arrow">↓</span></th>
+        <th data-col="symbol">SYMBOL</th>
+        <th data-col="price">PRICE</th>
+        <th data-col="daily_percentage">DAY %</th>
+        <th data-col="weekly_percentage">WEEK %</th>
+        <th data-col="rsi">RSI</th>
+        <th data-col="trend_type">TREND</th>
+        <th data-col="score">SCORE</th>
+        <th data-col="action">SIGNAL</th>
+        <th data-col="next_prediction">PREDICTION</th>
+        <th data-col="market_cap">MKT CAP</th>
+      </tr>
+    </thead>
+    <tbody id="tableBody"></tbody>
+  </table>
+</div>
+
+<!-- MOBILE CARDS -->
+<div class="mobile-card-list" id="mobileCardList"></div>
+
+<div class="pagination" id="pagination"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let allStocks = [];
+let filteredStocks = [];
+let currentFilter = 'all';
+let currentPage = 1;
+let pageSize = 20;
+let sortCol = 'score';
+let sortDir = -1;
+
+function getTrendIcon(trend) {
+  if (trend.includes('Strong Up')) return '▲▲';
+  if (trend.includes('Up')) return '▲';
+  if (trend.includes('Strong Down')) return '▼▼';
+  if (trend.includes('Down')) return '▼';
+  return '→';
+}
+function getRsiClass(rsi) {
+  if (rsi < 30) return 'positive';
+  if (rsi > 70) return 'negative';
+  return 'accent';
+}
+function getScoreBg(score) {
+  if (score >= 70) return 'rgba(0,245,160,0.1)';
+  if (score >= 40) return 'rgba(255,170,0,0.1)';
+  return 'rgba(255,61,113,0.1)';
+}
+function getScoreColor(score) {
+  if (score >= 70) return '#00f5a0';
+  if (score >= 40) return '#ffaa00';
+  return '#ff3d71';
+}
+
+function renderTable(stocks) {
+  const tbody = document.getElementById('tableBody');
+  tbody.innerHTML = '';
+  stocks.forEach((s, i) => {
+    const isUp = s.daily_percentage >= 0;
+    const wkUp = s.weekly_percentage >= 0;
+    const predUp = s.pred_change >= 0;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="mono muted">${(currentPage-1)*pageSize + i + 1}</td>
+      <td>
+        <div class="tbl-symbol">${s.symbol}</div>
+        <div class="tbl-name">${s.name}</div>
+      </td>
+      <td class="tbl-price mono">$${s.price.toFixed(2)}</td>
+      <td class="tbl-change ${isUp?'positive':'negative'}">${isUp?'+':''}${s.daily_percentage.toFixed(2)}%</td>
+      <td class="tbl-change ${wkUp?'positive':'negative'}">${wkUp?'+':''}${s.weekly_percentage.toFixed(2)}%</td>
+      <td class="tbl-rsi ${getRsiClass(s.rsi)}">${s.rsi}</td>
+      <td><span class="mono" style="font-size:0.75rem;">${getTrendIcon(s.trend_type)} ${s.trend_type}</span></td>
+      <td>
+        <span class="mono" style="font-weight:700; color:${getScoreColor(s.score)}; background:${getScoreBg(s.score)}; padding:0.2rem 0.5rem; border-radius:4px;">${s.score}</span>
+      </td>
+      <td><span class="action-badge ${s.action_color}">${s.action}</span></td>
+      <td>
+        <div class="mono" style="font-size:0.8rem;">$${s.next_prediction.toFixed(2)}</div>
+        <div class="mono ${predUp?'positive':'negative'}" style="font-size:0.68rem;">${predUp?'+':''}${s.pred_change.toFixed(2)}%</div>
+      </td>
+      <td class="mono muted" style="font-size:0.78rem;">${s.market_cap_str || 'N/A'}</td>
+    `;
+    tr.addEventListener('click', () => { window.location.href = `/stock/${s.symbol}`; });
+    tbody.appendChild(tr);
+  });
+}
+
+function renderMobileCards(stocks) {
+  const list = document.getElementById('mobileCardList');
+  list.innerHTML = '';
+  stocks.forEach((s, i) => {
+    const isUp = s.daily_percentage >= 0;
+    const card = document.createElement('div');
+    card.className = 'mobile-stock-card';
+    card.style.animationDelay = `${i * 0.04}s`;
+    card.innerHTML = `
+      <div class="mscard-row1">
+        <div class="mscard-left">
+          <div class="mscard-symbol">${s.symbol} <span class="action-badge ${s.action_color}" style="font-size:0.6rem; margin-left:4px;">${s.action}</span></div>
+          <div class="mscard-name">${s.name}</div>
+        </div>
+        <div class="mscard-right">
+          <div class="mscard-price mono">$${s.price.toFixed(2)}</div>
+          <div class="mscard-change mono ${isUp?'positive':'negative'}">${isUp?'+':''}${s.daily_percentage.toFixed(2)}%</div>
+        </div>
+      </div>
+      <div class="mscard-row2">
+        <div class="mscard-chip"><span class="chip-label">RSI </span><span class="chip-val ${getRsiClass(s.rsi)}">${s.rsi}</span></div>
+        <div class="mscard-chip"><span class="chip-label">SCORE </span><span class="chip-val" style="color:${getScoreColor(s.score)}">${s.score}</span></div>
+        <div class="mscard-chip"><span class="chip-label">${getTrendIcon(s.trend_type)} </span><span class="chip-val">${s.trend_type.replace(' Trend','').replace('trend','')}</span></div>
+        <div class="mscard-chip"><span class="chip-label">PRED </span><span class="chip-val ${s.pred_change>=0?'positive':'negative'}">$${s.next_prediction.toFixed(2)}</span></div>
+      </div>
+    `;
+    card.addEventListener('click', () => { window.location.href = `/stock/${s.symbol}`; });
+    list.appendChild(card);
+  });
+}
+
+function renderPagination(total) {
+  const pages = Math.ceil(total / pageSize);
+  const pag = document.getElementById('pagination');
+  pag.innerHTML = '';
+
+  const prevBtn = document.createElement('button');
+  prevBtn.className = 'page-btn'; prevBtn.textContent = '← PREV';
+  prevBtn.disabled = currentPage === 1;
+  prevBtn.addEventListener('click', () => { currentPage--; render(); });
+  pag.appendChild(prevBtn);
+
+  const startPage = Math.max(1, currentPage - 2);
+  const endPage = Math.min(pages, currentPage + 2);
+  for (let p = startPage; p <= endPage; p++) {
+    const btn = document.createElement('button');
+    btn.className = `page-btn ${p===currentPage?'active':''}`;
+    btn.textContent = p;
+    btn.addEventListener('click', () => { currentPage = p; render(); });
+    pag.appendChild(btn);
+  }
+
+  const nextBtn = document.createElement('button');
+  nextBtn.className = 'page-btn'; nextBtn.textContent = 'NEXT →';
+  nextBtn.disabled = currentPage >= pages;
+  nextBtn.addEventListener('click', () => { currentPage++; render(); });
+  pag.appendChild(nextBtn);
+}
+
+function applyFilters() {
+  const q = document.getElementById('searchBox').value.toLowerCase();
+  filteredStocks = allStocks.filter(s => {
+    const matchFilter = currentFilter === 'all' || s.action.toLowerCase() === currentFilter;
+    const matchSearch = !q || s.symbol.toLowerCase().includes(q) || s.name.toLowerCase().includes(q);
+    return matchFilter && matchSearch;
+  });
+
+  // Sort
+  filteredStocks.sort((a, b) => {
+    let av = a[sortCol], bv = b[sortCol];
+    if (typeof av === 'string') av = av.toLowerCase(), bv = bv.toLowerCase();
+    return sortDir * (av > bv ? 1 : av < bv ? -1 : 0);
+  });
+
+  currentPage = 1;
+  render();
+}
+
+function render() {
+  const start = (currentPage - 1) * pageSize;
+  const pageStocks = filteredStocks.slice(start, start + pageSize);
+  renderTable(pageStocks);
+  renderMobileCards(pageStocks);
+  renderPagination(filteredStocks.length);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+async function loadAllStocks() {
+  try {
+    const res = await fetch('/api/stocks/all');
+    const data = await res.json();
+    if (!data.stocks) throw new Error('No data');
+
+    allStocks = data.stocks;
+    filteredStocks = [...allStocks];
+
+    document.getElementById('loadingState').style.display = 'none';
+    document.getElementById('tableWrap').style.display = 'block';
+    document.getElementById('mobileCardList').style.display = 'flex';
+    document.getElementById('lastUpdated').textContent = `${allStocks.length} stocks · ${new Date().toLocaleTimeString()}`;
+    render();
+  } catch(e) {
+    document.getElementById('loadingState').style.display = 'none';
+    document.getElementById('errorState').style.display = 'block';
+  }
+}
+
+// Filters
+document.querySelectorAll('.filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentFilter = btn.dataset.filter;
+    applyFilters();
+  });
+});
+
+// Search
+document.getElementById('searchBox').addEventListener('input', applyFilters);
+
+// Sort by column headers
+document.querySelectorAll('.stocks-table th[data-col]').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = th.dataset.col;
+    if (sortCol === col) sortDir *= -1;
+    else { sortCol = col; sortDir = -1; }
+    document.querySelectorAll('.stocks-table th').forEach(t => {
+      t.classList.remove('sorted');
+      const arrow = t.querySelector('.sort-arrow');
+      if (arrow) arrow.textContent = '↓';
+    });
+    th.classList.add('sorted');
+    const arrow = th.querySelector('.sort-arrow');
+    if (arrow) arrow.textContent = sortDir === -1 ? '↓' : '↑';
+    applyFilters();
+  });
+});
+
+loadAllStocks();
+</script>
+{% endblock %}

@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — ysra Markets{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="page-title">MARKET <span>PULSE</span></div>
+    <div class="page-subtitle">// TOP 10 SCORED STOCKS · REAL-TIME SIGNALS</div>
+  </div>
+  <div class="last-updated" id="lastUpdated">Loading...</div>
+</div>
+
+<div id="dashboardContent">
+  <div class="loading-state" id="loadingState">
+    <div class="spinner"></div>
+    <div class="loading-text">FETCHING MARKET DATA...</div>
+  </div>
+  <div id="cardsGrid" class="top10-grid" style="display:none;"></div>
+  <div id="errorState" class="error-state" style="display:none;">⚠ Failed to load market data. Please try again.</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+const grid = document.getElementById('cardsGrid');
+const loadingState = document.getElementById('loadingState');
+const errorState = document.getElementById('errorState');
+
+function getTrendClass(trend) {
+  if (trend.includes('Uptrend')) return 'uptrend';
+  if (trend.includes('Downtrend')) return 'downtrend';
+  return 'neutral';
+}
+function getTrendIcon(trend) {
+  if (trend.includes('Strong Up')) return '▲▲';
+  if (trend.includes('Uptrend')) return '▲';
+  if (trend.includes('Strong Down')) return '▼▼';
+  if (trend.includes('Downtrend')) return '▼';
+  return '→';
+}
+function getScoreClass(score) {
+  if (score >= 70) return 'high';
+  if (score >= 40) return 'mid';
+  return 'low';
+}
+function formatNum(n) {
+  if (!n) return 'N/A';
+  if (n >= 1e12) return '$' + (n/1e12).toFixed(2) + 'T';
+  if (n >= 1e9) return '$' + (n/1e9).toFixed(2) + 'B';
+  return '$' + (n/1e6).toFixed(2) + 'M';
+}
+
+function drawSparkline(canvas, data) {
+  const ctx = canvas.getContext('2d');
+  const min = Math.min(...data), max = Math.max(...data);
+  const isUp = data[data.length-1] >= data[0];
+  const color = isUp ? '#00f5a0' : '#ff3d71';
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: data.map((_, i) => i),
+      datasets: [{
+        data: data,
+        borderColor: color,
+        borderWidth: 1.5,
+        fill: true,
+        backgroundColor: isUp
+          ? 'rgba(0,245,160,0.08)' : 'rgba(255,61,113,0.08)',
+        pointRadius: 0,
+        tension: 0.4
+      }]
+    },
+    options: {
+      responsive: false,
+      animation: false,
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      scales: { x: { display: false }, y: { display: false, min: min * 0.98, max: max * 1.02 } }
+    }
+  });
+}
+
+function renderCard(stock, rank) {
+  const isUp = stock.daily_percentage >= 0;
+  const changeStr = `${isUp?'+':''}${stock.daily_percentage.toFixed(2)}%  ${isUp?'+':''}$${Math.abs(stock.change).toFixed(2)}`;
+  const scoreClass = getScoreClass(stock.score);
+
+  const card = document.createElement('div');
+  card.className = 'stock-card';
+  card.style.animationDelay = `${rank * 0.07}s`;
+  card.innerHTML = `
+    <div class="card-rank">#${rank+1} RANKED</div>
+    <div class="card-header">
+      <div>
+        <div class="card-symbol">${stock.symbol}</div>
+        <div class="card-name">${stock.name}</div>
+      </div>
+      <div class="action-badge ${stock.action_color}">${stock.action}</div>
+    </div>
+    <div class="card-price">$${stock.price.toFixed(2)}</div>
+    <div class="card-change ${isUp?'positive':'negative'}">${changeStr}</div>
+    <div class="sparkline-wrap">
+      <canvas id="spark-${stock.symbol}" width="240" height="40"></canvas>
+    </div>
+    <div class="card-metrics">
+      <div class="metric">
+        <div class="metric-label">RSI</div>
+        <div class="metric-value ${stock.rsi < 30 ? 'green' : stock.rsi > 70 ? 'red' : 'accent'}">${stock.rsi}</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">TREND</div>
+        <div class="metric-value" style="font-size:0.7rem;">${getTrendIcon(stock.trend_type)} ${stock.trend_type.replace(' Trend','').replace('trend','')}</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">SCORE</div>
+        <div class="metric-value accent">${stock.score}</div>
+      </div>
+    </div>
+    <div class="score-bar-wrap">
+      <div class="score-bar-label">
+        <span>INVESTMENT SCORE</span>
+        <span>${stock.score}/100</span>
+      </div>
+      <div class="score-bar-track">
+        <div class="score-bar-fill ${scoreClass}" style="width:${stock.score}%"></div>
+      </div>
+    </div>
+  `;
+  card.addEventListener('click', () => { window.location.href = `/stock/${stock.symbol}`; });
+  return card;
+}
+
+async function loadDashboard() {
+  try {
+    const res = await fetch('/api/stocks/top');
+    const data = await res.json();
+    if (!data.stocks || data.stocks.length === 0) throw new Error('No data');
+
+    loadingState.style.display = 'none';
+    grid.style.display = 'grid';
+
+    data.stocks.forEach((stock, i) => {
+      const card = renderCard(stock, i);
+      grid.appendChild(card);
+      if (stock.sparkline && stock.sparkline.length > 1) {
+        const canvas = document.getElementById(`spark-${stock.symbol}`);
+        if (canvas) drawSparkline(canvas, stock.sparkline);
+      }
+    });
+
+    document.getElementById('lastUpdated').textContent =
+      `Updated: ${new Date().toLocaleTimeString()}`;
+  } catch(e) {
+    loadingState.style.display = 'none';
+    errorState.style.display = 'block';
+    console.error(e);
+  }
+}
+
+loadDashboard();
+</script>
+{% endblock %}

@@ -1,0 +1,40 @@
+# APEX Markets — Stock Dashboard
+
+A Flask web app that tracks Top 500 stocks via Yahoo Finance with BUY/HOLD/SELL signals.
+
+## Features
+- **Dashboard** — Top 10 scored stocks as highlight cards with sparklines
+- **All Stocks** — Full table (desktop) / card list (mobile) with search, filter, sort
+- **Stock Detail** — Price history chart, previous/current/predicted prices, full stats, investment signal breakdown
+- Responsive: table on desktop, cards on mobile
+
+## Setup
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the app
+python app.py
+```
+
+Then open http://localhost:5000
+
+## How Scoring Works
+
+| Factor | Points |
+|--------|--------|
+| RSI < 30 (Oversold) | +20 |
+| RSI > 70 (Overbought) | -20 |
+| Strong Uptrend | +30 |
+| Uptrend | +15 |
+| Strong Downtrend | -30 |
+| Downtrend | -15 |
+| Daily change > 2% | +20 |
+| Daily change > 0% | +10 |
+| Daily change < -2% | -20 |
+| Daily change < 0% | -10 |
+
+**Score 70–100 = BUY | Score 40–69 = HOLD | Score 0–39 = SELL**
+
+> ⚠️ Not financial advice. For informational/educational use only.

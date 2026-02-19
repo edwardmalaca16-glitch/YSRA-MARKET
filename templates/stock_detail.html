@@ -1,0 +1,354 @@
+{% extends "base.html" %}
+{% block title %}{{ symbol }} — ysra Markets{% endblock %}
+
+{% block content %}
+<a href="/all-stocks" class="detail-back">← BACK TO ALL STOCKS</a>
+
+<div id="loadingState" class="loading-state">
+  <div class="spinner"></div>
+  <div class="loading-text">LOADING {{ symbol }}...</div>
+</div>
+<div id="errorState" class="error-state" style="display:none;">⚠ Could not load data for {{ symbol }}</div>
+<div id="detailContent" style="display:none;">
+
+  <!-- HERO -->
+  <div class="detail-hero">
+    <div>
+      <div class="detail-symbol" id="dSymbol">{{ symbol }}</div>
+      <div class="detail-name" id="dName">Loading...</div>
+      <div class="detail-sector" id="dSector"></div>
+    </div>
+    <div class="detail-price-block">
+      <div class="detail-price" id="dPrice">--</div>
+      <div class="detail-change-line" id="dChangeLine">--</div>
+      <div style="margin-top:0.75rem;" id="dActionBadge"></div>
+    </div>
+  </div>
+
+  <!-- PRICE COMPARISON CARDS -->
+  <div class="section-label">PRICE COMPARISON</div>
+  <div class="price-cards">
+    <div class="price-card">
+      <div class="price-card-label">PREVIOUS CLOSE</div>
+      <div class="price-card-value" id="pcPrev">--</div>
+      <div class="price-card-sub muted mono">Yesterday</div>
+    </div>
+    <div class="price-card">
+      <div class="price-card-label">CURRENT PRICE</div>
+      <div class="price-card-value accent" id="pcCurrent">--</div>
+      <div class="price-card-sub mono" id="pcChangeDay">--</div>
+    </div>
+    <div class="price-card">
+      <div class="price-card-label">PREDICTED NEXT</div>
+      <div class="price-card-value" id="pcPred">--</div>
+      <div class="price-card-sub mono" id="pcPredChange">--</div>
+    </div>
+    <div class="price-card">
+      <div class="price-card-label">DAY CHANGE</div>
+      <div class="price-card-value" id="pcDayAbs">--</div>
+      <div class="price-card-sub mono" id="pcDayPct">--</div>
+    </div>
+  </div>
+
+  <!-- CHART -->
+  <div class="chart-section">
+    <div class="chart-header">
+      <div class="chart-title">PRICE HISTORY</div>
+      <div class="mono muted" style="font-size:0.7rem;">6 MONTHS</div>
+    </div>
+    <div class="chart-canvas-wrap">
+      <canvas id="priceChart"></canvas>
+    </div>
+  </div>
+
+  <!-- STATS -->
+  <div class="section-label">MARKET STATISTICS</div>
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-label">RSI (14)</div>
+      <div class="stat-value" id="sRsi">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">TREND</div>
+      <div class="stat-value" id="sTrend">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">P/E RATIO</div>
+      <div class="stat-value" id="sPe">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">MARKET CAP</div>
+      <div class="stat-value" id="sMktCap">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">VOLUME</div>
+      <div class="stat-value" id="sVol">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">AVG VOLUME</div>
+      <div class="stat-value" id="sAvgVol">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">52W HIGH</div>
+      <div class="stat-value positive" id="s52h">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">52W LOW</div>
+      <div class="stat-value negative" id="s52l">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">BETA</div>
+      <div class="stat-value" id="sBeta">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">DIVIDEND YIELD</div>
+      <div class="stat-value" id="sDivYield">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">WEEKLY CHANGE</div>
+      <div class="stat-value" id="sWeekly">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">MONTHLY CHANGE</div>
+      <div class="stat-value" id="sMonthly">--</div>
+    </div>
+  </div>
+
+  <!-- DECISION PANEL -->
+  <div class="section-label">INVESTMENT SIGNAL</div>
+  <div class="decision-panel">
+    <div class="decision-main">
+      <div class="decision-label">RECOMMENDED ACTION</div>
+      <div class="decision-action" id="dAction">--</div>
+      <div class="decision-score-label">INVESTMENT SCORE</div>
+      <div style="display:flex; align-items:center; gap:1rem; margin-bottom:1rem;">
+        <div style="flex:1;">
+          <div class="score-bar-track" style="height:8px;">
+            <div class="score-bar-fill" id="dScoreBar" style="width:0%;"></div>
+          </div>
+        </div>
+        <div class="mono" id="dScoreNum" style="font-size:1.2rem; font-weight:700; min-width:3rem; text-align:right;">--</div>
+      </div>
+      <div class="mono muted" style="font-size:0.72rem; line-height:1.7;" id="dScoreDesc">Score is computed from RSI momentum, moving average trend, and daily price action. Higher = stronger buy signal.</div>
+    </div>
+    <div>
+      <div class="decision-label">SIGNAL BREAKDOWN</div>
+      <div class="signals-list" id="signalsList"></div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+const symbol = '{{ symbol }}';
+let priceChartInstance = null;
+
+function fmt(n) { return n ? n.toLocaleString() : 'N/A'; }
+function fmtCap(n) {
+  if (!n) return 'N/A';
+  if (n >= 1e12) return '$' + (n/1e12).toFixed(2) + 'T';
+  if (n >= 1e9) return '$' + (n/1e9).toFixed(2) + 'B';
+  return '$' + (n/1e6).toFixed(2) + 'M';
+}
+function pct(v) {
+  const cls = v >= 0 ? 'positive' : 'negative';
+  return `<span class="${cls}">${v>=0?'+':''}${v.toFixed(2)}%</span>`;
+}
+
+function buildSignals(stock) {
+  const signals = [];
+  // RSI signal
+  if (stock.rsi < 30) {
+    signals.push({ color: 'green', text: `RSI ${stock.rsi} — Oversold, potential bounce` });
+  } else if (stock.rsi > 70) {
+    signals.push({ color: 'red', text: `RSI ${stock.rsi} — Overbought, caution advised` });
+  } else {
+    signals.push({ color: 'orange', text: `RSI ${stock.rsi} — Neutral momentum zone` });
+  }
+  // Trend signal
+  if (stock.trend_type.includes('Strong Up')) {
+    signals.push({ color: 'green', text: `Strong Uptrend — Price above MA20 & MA50` });
+  } else if (stock.trend_type.includes('Up')) {
+    signals.push({ color: 'green', text: `Uptrend — Price above 20-day average` });
+  } else if (stock.trend_type.includes('Strong Down')) {
+    signals.push({ color: 'red', text: `Strong Downtrend — Price below MA20 & MA50` });
+  } else if (stock.trend_type.includes('Down')) {
+    signals.push({ color: 'red', text: `Downtrend — Price below 20-day average` });
+  } else {
+    signals.push({ color: 'gray', text: `Neutral trend — No clear direction` });
+  }
+  // Daily change signal
+  if (stock.daily_percentage > 2) {
+    signals.push({ color: 'green', text: `Strong day +${stock.daily_percentage.toFixed(2)}% — Bullish momentum` });
+  } else if (stock.daily_percentage > 0) {
+    signals.push({ color: 'green', text: `Positive day +${stock.daily_percentage.toFixed(2)}% — Mild upward` });
+  } else if (stock.daily_percentage < -2) {
+    signals.push({ color: 'red', text: `Weak day ${stock.daily_percentage.toFixed(2)}% — Bearish pressure` });
+  } else {
+    signals.push({ color: 'red', text: `Negative day ${stock.daily_percentage.toFixed(2)}% — Slight decline` });
+  }
+  // Prediction
+  if (stock.pred_change > 0) {
+    signals.push({ color: 'green', text: `Prediction: +${stock.pred_change.toFixed(2)}% → $${stock.next_prediction.toFixed(2)}` });
+  } else {
+    signals.push({ color: 'red', text: `Prediction: ${stock.pred_change.toFixed(2)}% → $${stock.next_prediction.toFixed(2)}` });
+  }
+  return signals;
+}
+
+async function loadDetail() {
+  try {
+    const res = await fetch(`/api/stock/${symbol}`);
+    if (!res.ok) throw new Error('Not found');
+    const s = await res.json();
+
+    document.getElementById('loadingState').style.display = 'none';
+    document.getElementById('detailContent').style.display = 'block';
+
+    // Hero
+    document.getElementById('dName').textContent = s.name;
+    document.getElementById('dSector').textContent = s.sector || '';
+    document.getElementById('dPrice').textContent = `$${s.price.toFixed(2)}`;
+    const isUp = s.daily_percentage >= 0;
+    document.getElementById('dChangeLine').innerHTML =
+      `<span class="${isUp?'positive':'negative'}">${isUp?'+':''}$${Math.abs(s.change).toFixed(2)} (${isUp?'+':''}${s.daily_percentage.toFixed(2)}%)</span> today`;
+    document.getElementById('dActionBadge').innerHTML =
+      `<span class="action-badge ${s.action_color}" style="font-size:0.85rem; padding:0.4rem 1rem;">${s.action}</span>`;
+
+    // Price cards
+    document.getElementById('pcPrev').textContent = `$${s.previous_close.toFixed(2)}`;
+    document.getElementById('pcCurrent').textContent = `$${s.price.toFixed(2)}`;
+    document.getElementById('pcChangeDay').innerHTML = pct(s.daily_percentage);
+    document.getElementById('pcPred').textContent = `$${s.next_prediction.toFixed(2)}`;
+    document.getElementById('pcPredChange').innerHTML = pct(s.pred_change);
+    document.getElementById('pcDayAbs').innerHTML =
+      `<span class="${isUp?'positive':'negative'}">${isUp?'+':''}$${Math.abs(s.change).toFixed(2)}</span>`;
+    document.getElementById('pcDayPct').innerHTML = pct(s.daily_percentage);
+
+    // Stats
+    document.getElementById('sRsi').innerHTML =
+      `<span class="${s.rsi<30?'positive':s.rsi>70?'negative':'accent'}">${s.rsi}</span>`;
+    document.getElementById('sTrend').textContent = s.trend_type;
+    document.getElementById('sPe').textContent = s.pe_ratio ? s.pe_ratio.toFixed(1) : 'N/A';
+    document.getElementById('sMktCap').textContent = fmtCap(s.market_cap);
+    document.getElementById('sVol').textContent = fmt(s.volume);
+    document.getElementById('sAvgVol').textContent = fmt(s.avg_volume);
+    document.getElementById('s52h').textContent = `$${s['52w_high'].toFixed(2)}`;
+    document.getElementById('s52l').textContent = `$${s['52w_low'].toFixed(2)}`;
+    document.getElementById('sBeta').textContent = s.beta || 'N/A';
+    document.getElementById('sDivYield').textContent = s.dividend_yield ? s.dividend_yield.toFixed(2) + '%' : '0%';
+    document.getElementById('sWeekly').innerHTML = pct(s.weekly_percentage);
+    document.getElementById('sMonthly').innerHTML = pct(s.monthly_percentage);
+
+    // Decision
+    document.getElementById('dAction').textContent = s.action;
+    document.getElementById('dAction').className = `decision-action ${s.action_color}`;
+    const scoreClass = s.score >= 70 ? 'high' : s.score >= 40 ? 'mid' : 'low';
+    document.getElementById('dScoreBar').className = `score-bar-fill ${scoreClass}`;
+    setTimeout(() => {
+      document.getElementById('dScoreBar').style.width = s.score + '%';
+    }, 200);
+    document.getElementById('dScoreNum').textContent = `${s.score}/100`;
+
+    // Signals
+    const signalsList = document.getElementById('signalsList');
+    signalsList.innerHTML = '';
+    buildSignals(s).forEach(sig => {
+      const div = document.createElement('div');
+      div.className = 'signal-item';
+      div.innerHTML = `<span class="signal-dot ${sig.color}"></span><span>${sig.text}</span>`;
+      signalsList.appendChild(div);
+    });
+
+    // Load chart
+    loadChart();
+  } catch(e) {
+    document.getElementById('loadingState').style.display = 'none';
+    document.getElementById('errorState').style.display = 'block';
+  }
+}
+
+async function loadChart() {
+  try {
+    const res = await fetch(`/api/stock/${symbol}/history`);
+    const data = await res.json();
+    if (!data.history) return;
+
+    const labels = data.history.map(d => d.date);
+    const closes = data.history.map(d => d.close);
+    const volumes = data.history.map(d => d.volume);
+
+    const isUp = closes[closes.length-1] >= closes[0];
+    const color = isUp ? '#00f5a0' : '#ff3d71';
+
+    const ctx = document.getElementById('priceChart').getContext('2d');
+    if (priceChartInstance) priceChartInstance.destroy();
+
+    priceChartInstance = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Close Price',
+          data: closes,
+          borderColor: color,
+          borderWidth: 2,
+          fill: true,
+          backgroundColor: (context) => {
+            const gradient = context.chart.ctx.createLinearGradient(0, 0, 0, 280);
+            gradient.addColorStop(0, isUp ? 'rgba(0,245,160,0.15)' : 'rgba(255,61,113,0.15)');
+            gradient.addColorStop(1, 'rgba(0,0,0,0)');
+            return gradient;
+          },
+          pointRadius: 0,
+          tension: 0.4
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#0c1018',
+            borderColor: '#1a2535',
+            borderWidth: 1,
+            titleColor: '#8ba0b8',
+            bodyColor: '#dde8f5',
+            titleFont: { family: 'Space Mono', size: 10 },
+            bodyFont: { family: 'Space Mono', size: 12 },
+            callbacks: {
+              label: ctx => `$${ctx.parsed.y.toFixed(2)}`
+            }
+          }
+        },
+        scales: {
+          x: {
+            grid: { color: 'rgba(26,37,53,0.8)' },
+            ticks: {
+              color: '#4a6080', font: { family: 'Space Mono', size: 10 },
+              maxTicksLimit: 8
+            }
+          },
+          y: {
+            grid: { color: 'rgba(26,37,53,0.8)' },
+            ticks: {
+              color: '#4a6080', font: { family: 'Space Mono', size: 10 },
+              callback: v => '$' + v.toFixed(0)
+            }
+          }
+        }
+      }
+    });
+  } catch(e) {
+    console.error('Chart error:', e);
+  }
+}
+
+loadDetail();
+</script>
+{% endblock %}
