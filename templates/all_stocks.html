@@ -18,9 +18,20 @@
   <button class="filter-btn" data-filter="sell">SELL</button>
 </div>
 
+<!-- Progress bar shown while batches load -->
+<div id="progressWrap" style="margin-bottom:1rem; display:none;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.35rem;">
+    <span style="font-family:var(--font-mono); font-size:0.65rem; color:var(--muted); letter-spacing:0.08em;">LOADING STOCKS...</span>
+    <span style="font-family:var(--font-mono); font-size:0.65rem; color:var(--accent);" id="progressLabel">0 / 0</span>
+  </div>
+  <div style="height:3px; background:var(--surface3); border-radius:4px; overflow:hidden;">
+    <div id="progressBar" style="height:100%; width:0%; background:linear-gradient(90deg,var(--accent),#00f5a0); border-radius:4px; transition:width 0.4s ease;"></div>
+  </div>
+</div>
+
 <div id="loadingState" class="loading-state">
   <div class="spinner"></div>
-  <div class="loading-text">FETCHING ALL MARKET DATA...</div>
+  <div class="loading-text">FETCHING FIRST BATCH...</div>
 </div>
 <div id="errorState" class="error-state" style="display:none;">⚠ Failed to load data.</div>
 
@@ -61,6 +72,9 @@ let currentPage = 1;
 let pageSize = 20;
 let sortCol = 'score';
 let sortDir = -1;
+let isLoading = false;
+
+const BATCH_SIZE = 50;
 
 function getTrendIcon(trend) {
   if (trend.includes('Strong Up')) return '▲▲';
@@ -206,24 +220,63 @@ function render() {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
+// ── Progressive batch loader ──
 async function loadAllStocks() {
-  try {
-    const res = await fetch('/api/stocks/all');
-    const data = await res.json();
-    if (!data.stocks) throw new Error('No data');
+  if (isLoading) return;
+  isLoading = true;
 
-    allStocks = data.stocks;
-    filteredStocks = [...allStocks];
+  let offset = 0;
+  let total = null;
 
-    document.getElementById('loadingState').style.display = 'none';
-    document.getElementById('tableWrap').style.display = 'block';
-    document.getElementById('mobileCardList').style.display = 'flex';
-    document.getElementById('lastUpdated').textContent = `${allStocks.length} stocks · ${new Date().toLocaleTimeString()}`;
-    render();
-  } catch(e) {
-    document.getElementById('loadingState').style.display = 'none';
-    document.getElementById('errorState').style.display = 'block';
+  while (true) {
+    try {
+      const res = await fetch(`/api/stocks/batch?offset=${offset}&limit=${BATCH_SIZE}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (!data.stocks) throw new Error('No data');
+
+      total = data.total;
+
+      // First batch: hide spinner, show table
+      if (offset === 0) {
+        document.getElementById('loadingState').style.display = 'none';
+        document.getElementById('tableWrap').style.display = 'block';
+        document.getElementById('mobileCardList').style.display = 'flex';
+        document.getElementById('progressWrap').style.display = 'block';
+      }
+
+      // Merge and re-sort
+      allStocks.push(...data.stocks);
+      allStocks.sort((a, b) => b.score - a.score);
+      filteredStocks = [...allStocks];
+      applyFilters();
+
+      // Update progress bar
+      const loaded = Math.min(offset + BATCH_SIZE, total);
+      const pct = total > 0 ? Math.round((loaded / total) * 100) : 0;
+      document.getElementById('progressBar').style.width = pct + '%';
+      document.getElementById('progressLabel').textContent = `${loaded} / ${total}`;
+      document.getElementById('lastUpdated').textContent =
+        `Loaded ${allStocks.length} / ${total} · ${new Date().toLocaleTimeString()}`;
+
+      if (!data.has_more) break;
+      offset += BATCH_SIZE;
+
+    } catch (e) {
+      console.error('Batch load error:', e);
+      if (allStocks.length === 0) {
+        document.getElementById('loadingState').style.display = 'none';
+        document.getElementById('errorState').style.display = 'block';
+      }
+      break;
+    }
   }
+
+  // Done — hide progress bar
+  document.getElementById('progressWrap').style.display = 'none';
+  document.getElementById('lastUpdated').textContent =
+    `${allStocks.length} stocks · ${new Date().toLocaleTimeString()}`;
+  isLoading = false;
 }
 
 // Filters
