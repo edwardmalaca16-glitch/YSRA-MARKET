@@ -1,36 +1,54 @@
-name: Deploy Stock App qwerqer
+name: Build and deploy Python app to Azure Web App
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v2
-    
-    - name: Set up Python
-      uses: actions/setup-python@v2
-      with:
-        python-version: '3.11'
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install flask pandas numpy scikit-learn yfinance requests
-        # Or if you have requirements.txt:
-        # pip install -r requirements.txt
-    
-    - name: Run tests
-      run: |
-        python -c "import yfinance; print('yfinance installed')"
-        python -c "import flask; print('flask installed')"
-    
-    - name: Deploy to Azure/Heroku/etc
-      run: |
-        # Your deployment commands here
-        echo "Deploying app..."
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python version
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Create and start virtual environment
+        run: |
+          python -m venv antenv
+          source antenv/bin/activate
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install setuptools wheel
+          pip install -r requirements.txt
+          
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-app
+          path: .
+          
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: 'production'
+      
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: python-app
+          
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: 'stockss'  # Changed from 'stocks' to 'stockss'
+          publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
+          package: .
