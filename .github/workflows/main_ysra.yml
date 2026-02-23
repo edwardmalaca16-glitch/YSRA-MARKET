@@ -29,5 +29,5 @@ jobs:
     - name: Deploy to Azure Web App
       uses: azure/webapps-deploy@v2
       with:
-        app-name: 'myapp-rg'  # Replace with your app name
+        app-name: 'myapp-rg'  # Make sure this matches your Azure Web App name
         package: '.'
