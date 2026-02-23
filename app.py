@@ -9,9 +9,11 @@ import time
 import random
 import os
 import warnings
+import yfinance as yf
+from functools import lru_cache
 warnings.filterwarnings('ignore')
 
-app = Flask(__name__)
+app = Flask(name)
 
 # ── Twelve Data API ───────────────────────────────────────────────────────────
 # Get your free key at https://twelvedata.com/register
@@ -20,8 +22,12 @@ TWELVE_API_KEY = os.environ.get('TWELVE_DATA_KEY', 'demo')
 TWELVE_BASE    = "https://api.twelvedata.com"
 
 # Rate-limit: free tier = 8 requests/minute, 800/day
-# Keep semaphore at 4 to stay safely under the per-minute limit
-_semaphore = threading.Semaphore(4)
+# Keep semaphore at 2 to stay safely under the per-minute limit
+_semaphore = threading.Semaphore(2)
+
+# Simple cache for Twelve Data calls
+_cache = {}
+_cache_ttl = 300  # 5 minutes
 
 TOP_500_STOCKS = [
     # Technology
@@ -170,146 +176,307 @@ def fmt_market_cap(mc):
     return "N/A"
 
 
-# ── Twelve Data API caller ────────────────────────────────────────────────────
+# ── Twelve Data API caller (with caching) ────────────────────────────────────
 
-def td_get(endpoint, params):
-    """Make a Twelve Data API call with retries and rate-limit handling."""
+def td_get_cached(endpoint, params):
+    """Cached Twelve Data API call with rate-limit handling."""
+    # Create cache key
+    cache_key = f"{endpoint}:{params.get('symbol', '')}:{params.get('interval', '')}"
+    
+    # Check cache
+    cached = _cache.get(cache_key)
+    if cached and time.time() - cached['time'] < _cache_ttl:
+        print(f"Cache hit for {cache_key}")
+        return cached['data']
+    
+    # Make API call
     params['apikey'] = TWELVE_API_KEY
     for attempt in range(3):
         try:
             with _semaphore:
-                time.sleep(random.uniform(0.1, 0.3))
+                time.sleep(random.uniform(2, 4))  # Delay between requests
                 r = requests.get(f"{TWELVE_BASE}{endpoint}", params=params, timeout=15)
+            
             if r.status_code == 429:
-                wait = 15 * (attempt + 1)
+                wait = 30 * (attempt + 1)
                 print(f"Rate limited on {endpoint}, waiting {wait}s...")
                 time.sleep(wait)
                 continue
-            return r.json()
+                
+            if r.status_code == 200:
+                data = r.json()
+                # Cache the result
+                _cache[cache_key] = {'data': data, 'time': time.time()}
+                return data
+            else:
+                print(f"Error {r.status_code} from Twelve Data: {r.text[:100]}")
+                return {}
+                
         except Exception as e:
             print(f"TD API error ({endpoint}): {e}")
-            time.sleep(2 ** attempt)
+            if attempt < 2:
+                time.sleep(5 * (2 ** attempt))
+            else:
+                return {}
     return {}
 
 
-# ── Core stock fetcher ────────────────────────────────────────────────────────
+# ── yFinance stock fetcher (primary) ─────────────────────────────────────────
 
-def fetch_stock_data(symbol):
-    """Fetch all data for one symbol using Twelve Data."""
+def fetch_stock_data_yfinance(symbol):
+    """Fetch stock data using yfinance as primary source."""
     try:
-        # 1. Time series — 90 days of daily closes for RSI, trend, sparkline
-        ts_resp = td_get("/time_series", {
-            "symbol":     symbol,
-            "interval":   "1day",
+        print(f"Fetching {symbol} with yfinance...")
+        stock = yf.Ticker(symbol)
+        
+        # Get historical data (3 months of daily data)
+        hist = stock.history(period="3mo")
+        if hist.empty:
+            print(f"No yfinance data for {symbol}, will try Twelve Data")
+            return None
+        
+        # Get info
+        info = stock.info
+        if not info:
+            print(f"No info for {symbol}")
+            return None
+        
+        # Calculate metrics from historical data
+        closes = hist['Close']
+        current_price = closes.iloc[-1]
+        previous_close = closes.iloc[-2] if len(closes) > 1 else current_price
+        daily_change = ((current_price - previous_close) / previous_close) * 100
+        
+        # Weekly and monthly changes
+        week_ago = closes.iloc[-6] if len(closes) >= 6 else previous_close
+        month_ago = closes.iloc[-22] if len(closes) >= 22 else previous_close
+        weekly_change = ((current_price - week_ago) / week_ago) * 100
+        monthly_change = ((current_price - month_ago) / month_ago) * 100
+        
+        # Technical indicators
+        rsi = calculate_rsi(closes)
+        trend_type = calculate_trend_type(closes)
+        next_prediction = predict_next_value(closes)
+        pred_change = ((next_prediction - current_price) / current_price) * 100
+        
+        # Score and action
+        score = calculate_score(rsi, trend_type, daily_change)
+        if score >= 70:
+            action, action_color = "BUY", "green"
+        elif score >= 40:
+            action, action_color = "HOLD", "orange"
+        else:
+            action, action_color = "SELL", "red"
+        
+        # Sparkline (last 30 days)
+        sparkline = [round(float(x), 2) for x in closes.tail(30).tolist()]
+        
+        # Get metrics from info
+        market_cap = info.get('marketCap', 0)
+        pe_ratio = info.get('trailingPE', 0)
+        if pe_ratio:
+            pe_ratio = round(pe_ratio, 2)
+        
+        dividend_yield = info.get('dividendYield', 0)
+        if dividend_yield:
+            dividend_yield = round(dividend_yield * 100, 2)
+        else:
+            dividend_yield = 0
+        
+        beta = info.get('beta', 0)
+        if beta:
+            beta = round(beta, 2)
+        
+        volume = info.get('volume', 0)
+        avg_volume = info.get('averageVolume', 0)
+        week52_high = info.get('fiftyTwoWeekHigh', 0)
+        week52_low = info.get('fiftyTwoWeekLow', 0)
+        
+        # Format market cap
+        mc_str = fmt_market_cap(market_cap)
+        
+        # Get company name
+        name = info.get('longName', symbol)
+        sector = info.get('sector', 'N/A')
+        
+        return {
+            'symbol': symbol,
+            'name': name,
+            'sector': sector,
+            'price': round(current_price, 2),
+            'previous_close': round(previous_close, 2),
+            'change': round(current_price - previous_close, 2),
+            'daily_percentage': round(daily_change, 2),
+            'weekly_percentage': round(weekly_change, 2),
+            'monthly_percentage': round(monthly_change, 2),
+            'rsi': rsi,
+            'trend_type': trend_type,
+            'score': score,
+            'action': action,
+            'action_color': action_color,
+            'next_prediction': round(next_prediction, 2),
+            'pred_change': round(pred_change, 2),
+            'sparkline': sparkline,
+            'volume': volume,
+            'market_cap': market_cap,
+            'market_cap_str': mc_str,
+            'pe_ratio': pe_ratio if pe_ratio else 0,
+            'dividend_yield': dividend_yield,
+            '52w_high': round(week52_high, 2) if week52_high else 0,
+            '52w_low': round(week52_low, 2) if week52_low else 0,
+            'avg_volume': avg_volume,
+            'beta': beta if beta else 0,
+            'data_source': 'yfinance'
+        }
+        
+    except Exception as e:
+        print(f"Error in yfinance fetch for {symbol}: {e}")
+        return None
+
+
+# ── Twelve Data stock fetcher (fallback) ─────────────────────────────────────
+
+def fetch_stock_data_twelvedata(symbol):
+    """Fetch stock data using Twelve Data as fallback."""
+    try:
+        print(f"Fetching {symbol} with Twelve Data (fallback)...")
+        
+        # 1. Time series — 90 days of daily closes
+        ts_resp = td_get_cached("/time_series", {
+            "symbol": symbol,
+            "interval": "1day",
             "outputsize": 90,
-            "type":       "stock",
+            "type": "stock",
         })
 
-        if ts_resp.get("status") == "error" or "values" not in ts_resp:
-            print(f"No time series for {symbol}: {ts_resp.get('message', '')}")
+        if not ts_resp or ts_resp.get("status") == "error" or "values" not in ts_resp:
+            print(f"No time series for {symbol}")
             return None
 
-        values = ts_resp["values"]   # newest first from API
+        values = ts_resp["values"]
         if len(values) < 2:
             return None
 
         # Reverse so index 0 = oldest, last = most recent
         closes_raw = [float(v["close"]) for v in reversed(values)]
-        closes     = pd.Series(closes_raw)
+        closes = pd.Series(closes_raw)
 
-        current_price  = closes.iloc[-1]
+        current_price = closes.iloc[-1]
         previous_close = closes.iloc[-2]
-        daily_change   = ((current_price - previous_close) / previous_close) * 100
-        change         = current_price - previous_close
+        daily_change = ((current_price - previous_close) / previous_close) * 100
+        change = current_price - previous_close
 
-        rsi             = calculate_rsi(closes)
-        trend_type      = calculate_trend_type(closes)
+        # Technical indicators
+        rsi = calculate_rsi(closes)
+        trend_type = calculate_trend_type(closes)
         next_prediction = predict_next_value(closes)
-        score           = calculate_score(rsi, trend_type, daily_change)
+        score = calculate_score(rsi, trend_type, daily_change)
 
-        if score >= 70:   action, action_color = "BUY",  "green"
-        elif score >= 40: action, action_color = "HOLD", "orange"
-        else:             action, action_color = "SELL", "red"
+        if score >= 70:
+            action, action_color = "BUY", "green"
+        elif score >= 40:
+            action, action_color = "HOLD", "orange"
+        else:
+            action, action_color = "SELL", "red"
 
-        week_ago       = float(closes.iloc[-6])  if len(closes) >= 6  else previous_close
-        month_ago      = float(closes.iloc[-22]) if len(closes) >= 22 else previous_close
-        weekly_change  = ((current_price - week_ago)  / week_ago)  * 100
+        #Weekly and monthly changes
+        week_ago = float(closes.iloc[-6]) if len(closes) >= 6 else previous_close
+        month_ago = float(closes.iloc[-22]) if len(closes) >= 22 else previous_close
+        weekly_change = ((current_price - week_ago) / week_ago) * 100
         monthly_change = ((current_price - month_ago) / month_ago) * 100
-        pred_change    = ((next_prediction - current_price) / current_price) * 100
-        sparkline      = [round(float(v), 2) for v in closes.tail(30).tolist()]
+        pred_change = ((next_prediction - current_price) / current_price) * 100
+        sparkline = [round(float(v), 2) for v in closes.tail(30).tolist()]
 
         # 2. Quote — volume, 52w high/low, name
-        quote      = td_get("/quote", {"symbol": symbol})
-        name       = quote.get("name", symbol)
-        volume     = int(float(quote.get("volume", 0) or 0))
+        quote = td_get_cached("/quote", {"symbol": symbol})
+        name = quote.get("name", symbol)
+        volume = int(float(quote.get("volume", 0) or 0))
         avg_volume = int(float(quote.get("average_volume", 0) or 0))
-        w52        = quote.get("fifty_two_week", {}) or {}
+        w52 = quote.get("fifty_two_week", {}) or {}
         week52_high = round(float(w52.get("high", 0) or 0), 2)
-        week52_low  = round(float(w52.get("low",  0) or 0), 2)
+        week52_low = round(float(w52.get("low", 0) or 0), 2)
 
         # 3. Statistics — market cap, PE, beta, dividend yield
-        stats      = td_get("/statistics", {"symbol": symbol})
-        stat_vals  = stats.get("statistics", {}) or {}
+        stats = td_get_cached("/statistics", {"symbol": symbol})
+        stat_vals = stats.get("statistics", {}) or {}
         val_metrics = stat_vals.get("valuations_metrics", {}) or {}
-        stk_stats   = stat_vals.get("stock_statistics", {}) or {}
-        div_splits  = stat_vals.get("dividends_and_splits", {}) or {}
+        stk_stats = stat_vals.get("stock_statistics", {}) or {}
+        div_splits = stat_vals.get("dividends_and_splits", {}) or {}
 
-        market_cap    = float(val_metrics.get("market_capitalization", 0) or 0)
-        pe_ratio      = round(float(val_metrics.get("trailing_pe", 0) or 0), 2)
-        beta          = round(float(stk_stats.get("beta", 0) or 0), 2)
+        market_cap = float(val_metrics.get("market_capitalization", 0) or 0)
+        pe_ratio = round(float(val_metrics.get("trailing_pe", 0) or 0), 2)
+        beta = round(float(stk_stats.get("beta", 0) or 0), 2)
         div_yield_raw = div_splits.get("forward_annual_dividend_yield", 0)
-        div_yield     = round(float(div_yield_raw or 0) * 100, 2)
+        div_yield = round(float(div_yield_raw or 0) * 100, 2)
 
-        # TD returns market cap in full dollars
         mc_str = fmt_market_cap(market_cap)
 
         return {
-            'symbol':             symbol,
-            'name':               name,
-            'sector':             quote.get("exchange", "N/A"),
-            'price':              round(current_price,  2),
-            'previous_close':     round(previous_close, 2),
-            'change':             round(change,         2),
-            'daily_percentage':   round(daily_change,   2),
-            'weekly_percentage':  round(weekly_change,  2),
+            'symbol': symbol,
+            'name': name,
+            'sector': quote.get("exchange", "N/A"),
+            'price': round(current_price, 2),
+            'previous_close': round(previous_close, 2),
+            'change': round(change, 2),
+            'daily_percentage': round(daily_change, 2),
+            'weekly_percentage': round(weekly_change, 2),
             'monthly_percentage': round(monthly_change, 2),
-            'rsi':                rsi,
-            'trend_type':         trend_type,
-            'score':              score,
-            'action':             action,
-            'action_color':       action_color,
-            'next_prediction':    round(next_prediction, 2),
-            'pred_change':        round(pred_change,     2),
-            'sparkline':          sparkline,
-            'volume':             volume,
-            'market_cap':         market_cap,
-            'market_cap_str':     mc_str,
-            'pe_ratio':           pe_ratio,
-            'dividend_yield':     div_yield,
-            '52w_high':           week52_high,
-            '52w_low':            week52_low,
-            'avg_volume':         avg_volume,
-            'beta':               beta,
+            'rsi': rsi,
+            'trend_type': trend_type,
+            'score': score,
+            'action': action,
+            'action_color': action_color,
+            'next_prediction': round(next_prediction, 2),
+            'pred_change': round(pred_change, 2),
+            'sparkline': sparkline,
+            'volume': volume,
+            'market_cap': market_cap,
+            'market_cap_str': mc_str,
+            'pe_ratio': pe_ratio,
+            'dividend_yield': div_yield,
+            '52w_high': week52_high,
+            '52w_low': week52_low,
+            'avg_volume': avg_volume,
+            'beta': beta,
+            'data_source': 'twelvedata'
         }
 
     except Exception as e:
-        print(f"Error fetching {symbol}: {e}")
+        print(f"Error fetching {symbol} with Twelve Data: {e}")
         return None
 
 
-def fetch_stocks_parallel(symbols, max_workers=4):
+# ── Main stock fetcher (tries yfinance first, then Twelve Data) ─────────────
+
+def fetch_stock_data(symbol):
+    """Fetch stock data trying yfinance first, then falling back to Twelve Data."""
+    # Try yfinance first
+    result = fetch_stock_data_yfinance(symbol)
+    if result:
+        return result
+    
+    # If yfinance fails, try Twelve Data
+    print(f"yfinance failed for {symbol}, trying Twelve Data...")
+    time.sleep(1)  # Small delay before fallback
+    return fetch_stock_data_twelvedata(symbol)
+
+
+def fetch_stocks_parallel(symbols, max_workers=2):
     """
-    Fetch stocks in parallel.
-    max_workers=4 keeps us safely within Twelve Data free tier (8 req/min).
-    Each stock makes 3 API calls (time_series + quote + statistics).
+    Fetch stocks in parallel with reduced workers to avoid rate limiting.
     """
     results = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_symbol = {executor.submit(fetch_stock_data, sym): sym for sym in symbols}
         for future in as_completed(future_to_symbol):
-            result = future.result()
-            if result:
-                results.append(result)
+            try:
+                result = future.result(timeout=30)
+                if result:
+                    results.append(result)
+                    print(f"Successfully fetched {result['symbol']} from {result.get('data_source', 'unknown')}")
+            except Exception as e:
+                symbol = future_to_symbol[future]
+                print(f"Failed to fetch {symbol}: {e}")
     return results
 
 
@@ -329,28 +496,30 @@ def all_stocks():
 
 @app.route('/api/stocks/top')
 def api_top_stocks():
-    # Only fetch first 20 for the dashboard top-10 to save API credits
-    results = fetch_stocks_parallel(TOP_500_STOCKS[:20], max_workers=4)
+    # Fetch only 5 stocks for the dashboard to save API calls
+    results = fetch_stocks_parallel(TOP_500_STOCKS[:5], max_workers=2)
     results.sort(key=lambda x: x['score'], reverse=True)
-    return jsonify({'stocks': results[:10]})
+    return jsonify({'stocks': results[:10]})  # Still return top 10 even if we only fetched 5
 
 @app.route('/api/stocks/all')
 def api_all_stocks():
-    results = fetch_stocks_parallel(TOP_500_STOCKS, max_workers=4)
+    # Be careful with this - it will make many API calls
+    # Consider implementing pagination instead
+    results = fetch_stocks_parallel(TOP_500_STOCKS[:20], max_workers=2)  # Only fetch first 20
     results.sort(key=lambda x: x['score'], reverse=True)
     return jsonify({'stocks': results})
 
 @app.route('/api/stocks/batch')
 def api_stocks_batch():
-    offset  = int(freq.args.get('offset', 0))
-    limit   = int(freq.args.get('limit',  20))   # 20 per batch on free tier
-    batch   = TOP_500_STOCKS[offset:offset + limit]
-    results = fetch_stocks_parallel(batch, max_workers=4)
+    offset = int(freq.args.get('offset', 0))
+    limit = int(freq.args.get('limit', 5))  # Small batches to avoid rate limiting
+    batch = TOP_500_STOCKS[offset:offset + limit]
+    results = fetch_stocks_parallel(batch, max_workers=2)
     results.sort(key=lambda x: x['score'], reverse=True)
     return jsonify({
-        'stocks':   results,
-        'total':    len(TOP_500_STOCKS),
-        'offset':   offset,
+        'stocks': results,
+        'total': len(TOP_500_STOCKS),
+        'offset': offset,
         'has_more': offset + limit < len(TOP_500_STOCKS)
     })
 
@@ -364,29 +533,79 @@ def api_stock_detail(symbol):
 @app.route('/api/stock/<symbol>/history')
 def api_stock_history(symbol):
     try:
-        resp = td_get("/time_series", {
-            "symbol":     symbol.upper(),
-            "interval":   "1day",
+        # Try yfinance first for history
+        stock = yf.Ticker(symbol.upper())
+        hist = stock.history(period="6mo")
+        
+        if not hist.empty:
+            data = []
+            for date, row in hist.iterrows():
+                data.append({
+                    'date': date.strftime('%Y-%m-%d'),
+                    'open': round(float(row['Open']), 2),
+                    'high': round(float(row['High']), 2),
+                    'low': round(float(row['Low']), 2),
+                    'close': round(float(row['Close']), 2),
+                    'volume': int(row['Volume'])
+                })
+            return jsonify({'history': data, 'source': 'yfinance'})
+        
+        # Fallback to Twelve Data
+        resp = td_get_cached("/time_series", {
+            "symbol": symbol.upper(),
+            "interval": "1day",
             "outputsize": 130,
-            "type":       "stock",
+            "type": "stock",
         })
+        
         if "values" not in resp:
             return jsonify({'error': 'No data'}), 404
+            
         data = []
         for v in reversed(resp["values"]):
             data.append({
-                'date':   v["datetime"],
-                'open':   round(float(v["open"]),  2),
-                'high':   round(float(v["high"]),  2),
-                'low':    round(float(v["low"]),   2),
-                'close':  round(float(v["close"]), 2),
+                'date': v["datetime"],
+                'open': round(float(v["open"]), 2),
+                'high': round(float(v["high"]), 2),
+                'low': round(float(v["low"]), 2),
+                'close': round(float(v["close"]), 2),
                 'volume': int(float(v.get("volume", 0)))
             })
-        return jsonify({'history': data})
+        return jsonify({'history': data, 'source': 'twelvedata'})
+        
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/health')
+def health_check():
+    """Health check endpoint to verify API connectivity."""
+    # Test yfinance
+    yf_working = False
+    td_working = False
+    
+    try:
+        test_stock = yf.Ticker('AAPL')
+        test_hist = test_stock.history(period="1d")
+        yf_working = not test_hist.empty
+    except:
+        pass
+    
+    try:
+        test_resp = td_get_cached("/quote", {"symbol": "AAPL"})
+        td_working = bool(test_resp and test_resp.get('name'))
+    except:
+        pass
+    
+    return jsonify({
+        'status': 'healthy',
+        'yfinance_working': yf_working,
+        'twelvedata_working': td_working,
+        'twelvedata_key': 'configured' if TWELVE_API_KEY != 'demo' else 'demo'
+    })
 
-if __name__ == '__main__':
+if name == 'main':
     port = int(os.environ.get('PORT', 8000))
+    print(f"Starting stock dashboard on port {port}")
+    print(f"Twelve Data API key: {'Configured' if TWELVE_API_KEY != 'demo' else 'Using DEMO key (limited)'}")
+    print(f"Health check available at /api/health")
     app.run(host='0.0.0.0', port=port, debug=False)
