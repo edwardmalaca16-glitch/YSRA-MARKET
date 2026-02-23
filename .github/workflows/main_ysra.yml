@@ -14,7 +14,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v2
       with:
-        python-version: '3.9'
+        python-version: '3.12'
     
     - name: Install dependencies
       run: |
@@ -29,5 +29,5 @@ jobs:
     - name: Deploy to Azure Web App
       uses: azure/webapps-deploy@v2
       with:
-        app-name: 'myapp-rg'  # Make sure this matches your Azure Web App name
+        app-name: 'myapp-rg'  # Replace with your actual app name
         package: '.'
