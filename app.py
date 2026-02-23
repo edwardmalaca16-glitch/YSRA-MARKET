@@ -246,7 +246,7 @@ def fetch_stock_data(symbol):
         return None
 
 
-def fetch_stocks_parallel(symbols, max_workers=20):
+def fetch_stocks_parallel(symbols, max_workers=10):
     """Fetch multiple stocks at the same time using threads"""
     results = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -272,25 +272,53 @@ def all_stocks():
 
 @app.route('/api/stocks/top')
 def api_top_stocks():
-    # Fetch first 50 in parallel, return top 10 by score
-    results = fetch_stocks_parallel(TOP_500_STOCKS[:50], max_workers=20)
+    # Fetch first 20 in parallel, return top 10 by score
+    results = fetch_stocks_parallel(TOP_500_STOCKS[:20], max_workers=10)
     results.sort(key=lambda x: x['score'], reverse=True)
     return jsonify({'stocks': results[:10]})
 
 @app.route('/api/stocks/all')
 def api_all_stocks():
-    # Fetch all in parallel with 30 workers
-    results = fetch_stocks_parallel(TOP_500_STOCKS, max_workers=30)
-    results.sort(key=lambda x: x['score'], reverse=True)
-    return jsonify({'stocks': results})
+    """Fetch stocks in batches of 20 to avoid overwhelming the system"""
+    all_results = []
+    batch_size = 20
+    
+    # Process in batches
+    for i in range(0, len(TOP_500_STOCKS), batch_size):
+        batch = TOP_500_STOCKS[i:i + batch_size]
+        print(f"Fetching batch {i//batch_size + 1}/{(len(TOP_500_STOCKS) + batch_size - 1)//batch_size}...")
+        
+        # Fetch this batch
+        batch_results = fetch_stocks_parallel(batch, max_workers=10)
+        all_results.extend(batch_results)
+        
+        # Sort current results and return after each batch if this is the first batch
+        # This provides progressive loading
+        if i == 0:
+            # Return first batch immediately
+            all_results.sort(key=lambda x: x['score'], reverse=True)
+            return jsonify({
+                'stocks': all_results,
+                'total': len(TOP_500_STOCKS),
+                'has_more': i + batch_size < len(TOP_500_STOCKS),
+                'next_batch': i + batch_size
+            })
+    
+    # Sort final results by score
+    all_results.sort(key=lambda x: x['score'], reverse=True)
+    return jsonify({
+        'stocks': all_results,
+        'total': len(TOP_500_STOCKS),
+        'has_more': False
+    })
 
 # ── NEW: Batch endpoint so All Stocks page loads progressively ──
 @app.route('/api/stocks/batch')
 def api_stocks_batch():
     offset = int(freq.args.get('offset', 0))
-    limit  = int(freq.args.get('limit', 50))
+    limit  = int(freq.args.get('limit', 20))  # Default to 20 per batch
     batch  = TOP_500_STOCKS[offset:offset + limit]
-    results = fetch_stocks_parallel(batch, max_workers=20)
+    results = fetch_stocks_parallel(batch, max_workers=10)
     results.sort(key=lambda x: x['score'], reverse=True)
     return jsonify({
         'stocks':    results,
