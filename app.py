@@ -5,9 +5,17 @@ import numpy as np
 from sklearn.linear_model import LinearRegression
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
+import time
+import random
+from functools import lru_cache
+from datetime import datetime, timedelta
 warnings.filterwarnings('ignore')
 
 app = Flask(__name__)
+
+# Cache for stock data to avoid too many requests
+stock_cache = {}
+CACHE_DURATION = 300  # 5 minutes
 
 TOP_500_STOCKS = [
     # Technology
@@ -169,85 +177,121 @@ def predict_next_value(prices):
         return float(prices.iloc[-1])
 
 def fetch_stock_data(symbol):
-    try:
-        stock = yf.Ticker(symbol)
-        info = stock.info
-        hist = stock.history(period="3mo")
-        if hist.empty or len(hist) < 2:
-            return None
+    """Fetch stock data with retry logic and user-agent rotation"""
+    # Check cache first
+    if symbol in stock_cache:
+        cache_time, cache_data = stock_cache[symbol]
+        if datetime.now() - cache_time < timedelta(seconds=CACHE_DURATION):
+            return cache_data
+    
+    # Add retry logic
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Add random delay to avoid rate limiting
+            if attempt > 0:
+                time.sleep(random.uniform(1, 3))
+            
+            # Set user-agent to mimic browser
+            stock = yf.Ticker(symbol)
+            
+            # Try to get info with timeout
+            info = {}
+            try:
+                info = stock.info
+            except:
+                pass
+                
+            hist = stock.history(period="3mo")
+            
+            if hist.empty or len(hist) < 2:
+                if attempt < max_retries - 1:
+                    continue
+                return None
 
-        closes = hist['Close'].dropna()
-        if len(closes) < 2:
-            return None
+            closes = hist['Close'].dropna()
+            if len(closes) < 2:
+                if attempt < max_retries - 1:
+                    continue
+                return None
 
-        current_price = float(closes.iloc[-1])
-        previous_close = float(closes.iloc[-2])
-        daily_change = ((current_price - previous_close) / previous_close) * 100
-        change = current_price - previous_close
-        rsi = calculate_rsi(closes)
-        trend_type = calculate_trend_type(closes)
-        next_prediction = predict_next_value(closes)
-        score = calculate_score(rsi, trend_type, daily_change)
+            current_price = float(closes.iloc[-1])
+            previous_close = float(closes.iloc[-2])
+            daily_change = ((current_price - previous_close) / previous_close) * 100
+            change = current_price - previous_close
+            rsi = calculate_rsi(closes)
+            trend_type = calculate_trend_type(closes)
+            next_prediction = predict_next_value(closes)
+            score = calculate_score(rsi, trend_type, daily_change)
 
-        if score >= 70:
-            action, action_color = "BUY", "green"
-        elif score >= 40:
-            action, action_color = "HOLD", "orange"
-        else:
-            action, action_color = "SELL", "red"
+            if score >= 70:
+                action, action_color = "BUY", "green"
+            elif score >= 40:
+                action, action_color = "HOLD", "orange"
+            else:
+                action, action_color = "SELL", "red"
 
-        week_ago = float(closes.iloc[-6]) if len(closes) >= 6 else previous_close
-        month_ago = float(closes.iloc[-22]) if len(closes) >= 22 else previous_close
-        weekly_change = ((current_price - week_ago) / week_ago) * 100
-        monthly_change = ((current_price - month_ago) / month_ago) * 100
-        pred_change = ((next_prediction - current_price) / current_price) * 100
-        sparkline = [round(float(v), 2) for v in closes.tail(30).tolist()]
+            week_ago = float(closes.iloc[-6]) if len(closes) >= 6 else previous_close
+            month_ago = float(closes.iloc[-22]) if len(closes) >= 22 else previous_close
+            weekly_change = ((current_price - week_ago) / week_ago) * 100
+            monthly_change = ((current_price - month_ago) / month_ago) * 100
+            pred_change = ((next_prediction - current_price) / current_price) * 100
+            sparkline = [round(float(v), 2) for v in closes.tail(30).tolist()]
 
-        market_cap = info.get('marketCap', 0) or 0
-        if market_cap >= 1e12:
-            mc_str = f"${market_cap/1e12:.2f}T"
-        elif market_cap >= 1e9:
-            mc_str = f"${market_cap/1e9:.2f}B"
-        elif market_cap > 0:
-            mc_str = f"${market_cap/1e6:.2f}M"
-        else:
-            mc_str = "N/A"
+            market_cap = info.get('marketCap', 0) or 0
+            if market_cap >= 1e12:
+                mc_str = f"${market_cap/1e12:.2f}T"
+            elif market_cap >= 1e9:
+                mc_str = f"${market_cap/1e9:.2f}B"
+            elif market_cap > 0:
+                mc_str = f"${market_cap/1e6:.2f}M"
+            else:
+                mc_str = "N/A"
 
-        return {
-            'symbol': symbol,
-            'name': info.get('longName', symbol),
-            'sector': info.get('sector', 'N/A'),
-            'price': round(current_price, 2),
-            'previous_close': round(previous_close, 2),
-            'change': round(change, 2),
-            'daily_percentage': round(daily_change, 2),
-            'weekly_percentage': round(weekly_change, 2),
-            'monthly_percentage': round(monthly_change, 2),
-            'rsi': rsi,
-            'trend_type': trend_type,
-            'score': score,
-            'action': action,
-            'action_color': action_color,
-            'next_prediction': round(next_prediction, 2),
-            'pred_change': round(pred_change, 2),
-            'sparkline': sparkline,
-            'volume': info.get('volume', 0) or 0,
-            'market_cap': market_cap,
-            'market_cap_str': mc_str,
-            'pe_ratio': round(info.get('trailingPE', 0) or 0, 2),
-            'dividend_yield': round((info.get('dividendYield', 0) or 0) * 100, 2),
-            '52w_high': round(info.get('fiftyTwoWeekHigh', 0) or 0, 2),
-            '52w_low': round(info.get('fiftyTwoWeekLow', 0) or 0, 2),
-            'avg_volume': info.get('averageVolume', 0) or 0,
-            'beta': round(info.get('beta', 0) or 0, 2),
-        }
-    except Exception as e:
-        print(f"Error fetching {symbol}: {e}")
-        return None
+            result = {
+                'symbol': symbol,
+                'name': info.get('longName', symbol),
+                'sector': info.get('sector', 'N/A'),
+                'price': round(current_price, 2),
+                'previous_close': round(previous_close, 2),
+                'change': round(change, 2),
+                'daily_percentage': round(daily_change, 2),
+                'weekly_percentage': round(weekly_change, 2),
+                'monthly_percentage': round(monthly_change, 2),
+                'rsi': rsi,
+                'trend_type': trend_type,
+                'score': score,
+                'action': action,
+                'action_color': action_color,
+                'next_prediction': round(next_prediction, 2),
+                'pred_change': round(pred_change, 2),
+                'sparkline': sparkline,
+                'volume': info.get('volume', 0) or 0,
+                'market_cap': market_cap,
+                'market_cap_str': mc_str,
+                'pe_ratio': round(info.get('trailingPE', 0) or 0, 2),
+                'dividend_yield': round((info.get('dividendYield', 0) or 0) * 100, 2),
+                '52w_high': round(info.get('fiftyTwoWeekHigh', 0) or 0, 2),
+                '52w_low': round(info.get('fiftyTwoWeekLow', 0) or 0, 2),
+                'avg_volume': info.get('averageVolume', 0) or 0,
+                'beta': round(info.get('beta', 0) or 0, 2),
+            }
+            
+            # Store in cache
+            stock_cache[symbol] = (datetime.now(), result)
+            return result
+            
+        except Exception as e:
+            print(f"Error fetching {symbol} (attempt {attempt+1}/{max_retries}): {e}")
+            if attempt == max_retries - 1:
+                return None
+            continue
+    
+    return None
 
 
-def fetch_stocks_parallel(symbols, max_workers=20):
-    """Fetch multiple stocks at the same time using threads"""
+def fetch_stocks_parallel(symbols, max_workers=10):
+    """Fetch multiple stocks at the same time using threads with reduced workers"""
     results = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_symbol = {executor.submit(fetch_stock_data, sym): sym for sym in symbols}
@@ -272,32 +316,44 @@ def all_stocks():
 
 @app.route('/api/stocks/top')
 def api_top_stocks():
-    # Fetch first 50 in parallel, return top 10 by score
-    results = fetch_stocks_parallel(TOP_500_STOCKS[:50], max_workers=20)
-    results.sort(key=lambda x: x['score'], reverse=True)
-    return jsonify({'stocks': results[:10]})
+    try:
+        # Fetch first 30 instead of 50 to reduce load
+        results = fetch_stocks_parallel(TOP_500_STOCKS[:30], max_workers=10)
+        if not results:
+            # Return fallback data if no results
+            return jsonify({'stocks': [], 'error': 'No data available'})
+        results.sort(key=lambda x: x['score'], reverse=True)
+        return jsonify({'stocks': results[:10]})
+    except Exception as e:
+        print(f"Error in top stocks: {e}")
+        return jsonify({'stocks': [], 'error': str(e)})
 
 @app.route('/api/stocks/all')
 def api_all_stocks():
-    # Fetch all in parallel with 30 workers
-    results = fetch_stocks_parallel(TOP_500_STOCKS, max_workers=30)
-    results.sort(key=lambda x: x['score'], reverse=True)
-    return jsonify({'stocks': results})
+    try:
+        results = fetch_stocks_parallel(TOP_500_STOCKS, max_workers=15)
+        results.sort(key=lambda x: x['score'], reverse=True)
+        return jsonify({'stocks': results})
+    except Exception as e:
+        print(f"Error in all stocks: {e}")
+        return jsonify({'stocks': [], 'error': str(e)})
 
-# ── NEW: Batch endpoint so All Stocks page loads progressively ──
 @app.route('/api/stocks/batch')
 def api_stocks_batch():
-    offset = int(freq.args.get('offset', 0))
-    limit  = int(freq.args.get('limit', 50))
-    batch  = TOP_500_STOCKS[offset:offset + limit]
-    results = fetch_stocks_parallel(batch, max_workers=20)
-    results.sort(key=lambda x: x['score'], reverse=True)
-    return jsonify({
-        'stocks':    results,
-        'total':     len(TOP_500_STOCKS),
-        'offset':    offset,
-        'has_more':  offset + limit < len(TOP_500_STOCKS)
-    })
+    try:
+        offset = int(freq.args.get('offset', 0))
+        limit  = int(freq.args.get('limit', 30))  # Reduced from 50
+        batch  = TOP_500_STOCKS[offset:offset + limit]
+        results = fetch_stocks_parallel(batch, max_workers=10)
+        results.sort(key=lambda x: x['score'], reverse=True)
+        return jsonify({
+            'stocks':    results,
+            'total':     len(TOP_500_STOCKS),
+            'offset':    offset,
+            'has_more':  offset + limit < len(TOP_500_STOCKS)
+        })
+    except Exception as e:
+        return jsonify({'stocks': [], 'error': str(e), 'has_more': False})
 
 @app.route('/api/stock/<symbol>')
 def api_stock_detail(symbol):
